@@ -1,0 +1,36 @@
+TRANSCRIPTS_URL = "http://ftp.ensembl.org/pub/release-105/fasta/naja_naja/cdna/Naja_naja.Nana_v5.cdna.all.fa.gz"
+
+ENVIRONMENTS = "../envs"
+
+
+
+rule all:
+	input:
+		"output/transcripts.fa.gz",
+		"output/transcripts.length_filtered.fa.gz",
+
+
+rule fetch_transcriptome:
+	output:
+		transcripts = "output/transcripts.fa.gz"
+
+	shell:
+		f"""
+		mkdir -p output/
+		wget {TRANSCRIPTS_URL} -O output/transcripts.fa.gz
+		"""
+
+
+rule filter_by_length:
+	input:
+		transcripts = rules.fetch_transcriptome.output.transcripts
+	output:
+		filtered = rules.fetch_transcriptome.output.transcripts.replace(".fa.gz", ".length_filtered.fa.gz")
+	params:
+		minlen = 300
+	conda:
+		f"{ENVIRONMENTS}/bbmap.yml"
+	shell:
+		"""
+		bbduk.sh in={input.transcripts} out={output.filtered} minlen={params.minlen}
+		"""

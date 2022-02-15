@@ -1,0 +1,135 @@
+TRANSCRIPTS_URL = "http://ftp.ensembl.org/pub/release-105/fasta/naja_naja/cdna/Naja_naja.Nana_v5.cdna.all.fa.gz"
+
+ENVIRONMENTS = "../envs"
+
+
+
+rule all:
+	input:
+		transcripts = "output/transcripts.fa.gz",
+		txome_chunks = expand(os.path.join("output", "txome_chunks", "chunk-{chunk}.fa"), chunk=range(10)),
+		orf_chunks = expand(os.path.join("output", "orf_chunks", "chunk-{chunk}.orfs.fa"), chunk=range(10)),
+		toxin_chunks = expand(os.path.join("output", "toxin_chunks", "chunk-{chunk}.toxins.tsv"), chunk=range(10)),
+		all_proteins = os.path.join("output", "all_proteins.faa"),
+		blast_output = os.path.join("output", "toxin_blast.filtered.tsv"),
+		toxins = os.path.join("output", "toxins.faa")
+
+	shell:
+		"""
+		rm -rvf {input.transcripts} $(dirname {input.txome_chunks}) $(dirname {input.orf_chunks}) $(dirname {input.toxin_chunks}) {input.all_proteins} {input.blast_output}
+		"""
+
+
+rule fetch_transcriptome:
+	output:
+		transcripts = "output/transcripts.fa.gz"
+
+	params:
+		url = TRANSCRIPTS_URL
+
+	shell:
+		"""
+		mkdir -p output/
+		wget {params.url} -O {output.transcripts}
+		"""
+
+
+rule filter_by_length:
+	input:
+		transcripts = rules.fetch_transcriptome.output.transcripts
+	output:
+		filtered = rules.fetch_transcriptome.output.transcripts.replace(".fa.gz", ".length_filtered.fa.gz")
+	params:
+		minlen = 300
+	conda:
+		f"{ENVIRONMENTS}/bbmap.yml"
+	shell:
+		"""
+		bbduk.sh in={input.transcripts} out={output.filtered} minlen={params.minlen}
+		"""
+
+
+rule split_transcriptome:
+	input:
+		rules.fetch_transcriptome.output.transcripts
+	output:
+		txome_chunks = expand(os.path.join("output", "txome_chunks", "chunk-{chunk}.fa"), chunk=range(10))
+	params:
+		chunksize = 3010
+	shell:
+		"""
+		mkdir -p output/txome_chunks/
+		gzip -dc {input[0]} | awk 'BEGIN {{n=0;m=0;}} /^>/ {{ if (n%{params.chunksize}==0) {{f=sprintf(\"output/txome_chunks/chunk-%d.fa\",m); m++;}}; n++; }} {{ print >> f }}'
+		"""
+
+
+rule find_and_translate_orfs:
+	input:
+		chunk = os.path.join("output", "txome_chunks", "chunk-{chunk}.fa"),
+	output:
+		orfs = os.path.join("output", "orf_chunks", "chunk-{chunk}.orfs.fa"),
+	params:
+		minlen = 1000
+	conda:
+		f"{ENVIRONMENTS}/emboss.yml"
+	shell:
+		"""
+		mkdir -p output/orf_chunks/
+		getorf -sequence {input.chunk} -outseq {output.orfs} -minsize {params.minlen}
+		"""
+
+
+rule find_toxins:
+	input:
+		proteins = os.path.join("output", "orf_chunks", "chunk-{chunk}.orfs.fa"),
+		db = "toxin_db/toxins.fasta"
+	output:
+		toxin_hits = os.path.join("output", "toxin_chunks", "chunk-{chunk}.toxins.tsv")
+	conda:
+		f"{ENVIRONMENTS}/blast.yml"
+	threads:
+		2
+	shell:
+		"""
+		mkdir -p output/toxin_chunks/
+		blastp -db {input.db} -query {input.proteins} -num_threads {threads} -out {output.toxin_hits} -outfmt '6 qseqid sseqid pident qstart qend sstart send qlen slen length nident mismatch positive gapopen gaps evalue bitscore'
+		"""
+
+
+rule combine_chunks_and_filter:
+	input:
+		expand(os.path.join("output", "toxin_chunks", "chunk-{chunk}.toxins.tsv"), chunk=range(10))
+	output:
+		toxin_proteins_blast = os.path.join("output", "toxin_blast.filtered.tsv")
+	params:
+		eval_threshold = 0.00001
+	shell:
+		"""
+		awk '$16 < {params.eval_threshold}' {input} > {output.toxin_proteins_blast}
+		"""
+
+rule combine_proteins:
+	input:
+		expand(os.path.join("output", "orf_chunks", "chunk-{chunk}.orfs.fa"), chunk=range(10))
+	output:
+		all_proteins = os.path.join("output", "all_proteins.faa")
+	shell:
+		"""
+		cat {input} > {output.all_proteins}
+		"""
+
+
+rule extract_toxins:
+	input:
+		toxin_proteins_blast = rules.combine_chunks_and_filter.output.toxin_proteins_blast,
+		proteins = rules.combine_proteins.output.all_proteins
+	output:
+		toxin_proteins = os.path.join("output", "toxins.faa")
+	conda:
+		f"{ENVIRONMENTS}/seqtk.yml"
+	shell:
+		"""
+		seqtk subseq {input.proteins} <(cut -f 1 {input.toxin_proteins_blast} | sort -u) > {output.toxin_proteins}
+		"""
+	
+

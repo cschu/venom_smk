@@ -1,0 +1,11 @@
+TRANSCRIPTS_URL: "http://ftp.ensembl.org/pub/release-105/fasta/naja_naja/cdna/Naja_naja.Nana_v5.cdna.all.fa.gz"
+
+ENVIRONMENTS: "../envs"
+
+VENOM_DATABASE: "toxin_db/toxins.fasta"
+
+
+transcript_criteria:
+  minimum_transcript_length: 300
+  chunksize: 3100
+  eval_threshold: 0.00001

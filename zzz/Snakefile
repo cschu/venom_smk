@@ -1,0 +1,19 @@
+TRANSCRIPTS_URL = "http://ftp.ensembl.org/pub/release-105/fasta/naja_naja/cdna/Naja_naja.Nana_v5.cdna.all.fa.gz"
+
+
+
+rule all:
+	input:
+		"output/transcripts.fa.gz",
+
+
+rule fetch_transcriptome:
+	output:
+		"output/transcripts.fa.gz"
+
+	shell:
+		f"""
+		mkdir -p output/
+		wget {TRANSCRIPTS_URL} -O output/transcripts.fa.gz
+		"""
+

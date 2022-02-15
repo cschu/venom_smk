@@ -1,0 +1,51 @@
+TRANSCRIPTS_URL = "http://ftp.ensembl.org/pub/release-105/fasta/naja_naja/cdna/Naja_naja.Nana_v5.cdna.all.fa.gz"
+
+ENVIRONMENTS = "../envs"
+
+
+
+rule all:
+	input:
+		"output/transcripts.fa.gz",
+		"output/transcripts.length_filtered.fa.gz",
+		expand(os.path.join("output", "txome_chunks", "chunk-{chunk}.fa"), chunk=range(10)),
+
+
+rule fetch_transcriptome:
+	output:
+		transcripts = "output/transcripts.fa.gz"
+
+	shell:
+		f"""
+		mkdir -p output/
+		wget {TRANSCRIPTS_URL} -O output/transcripts.fa.gz
+		"""
+
+
+rule filter_by_length:
+	input:
+		transcripts = rules.fetch_transcriptome.output.transcripts
+	output:
+		filtered = rules.fetch_transcriptome.output.transcripts.replace(".fa.gz", ".length_filtered.fa.gz")
+	params:
+		minlen = 300
+	conda:
+		f"{ENVIRONMENTS}/bbmap.yml"
+	shell:
+		"""
+		bbduk.sh in={input.transcripts} out={output.filtered} minlen={params.minlen}
+		"""
+
+
+rule split_transcriptome:
+	input:
+		rules.filter_by_length.output.filtered
+	output:
+		txome_chunks = expand(os.path.join("output", "txome_chunks", "chunk-{chunk}.fa"), chunk=range(10))
+	params:
+		chunksize = 2935
+	shell:
+		"""
+		mkdir -p output/txome_chunks/
+		gzip -dc {input[0]} | awk 'BEGIN {{n=0;m=0;}} /^>/ {{ if (n%{params.chunksize}==0) {{f=sprintf(\"output/txome_chunks/chunk-%d.fa\",m); m++;}}; n++; }} {{ print >> f }}'
+		"""
