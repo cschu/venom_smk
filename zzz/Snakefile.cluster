@@ -1,0 +1,153 @@
+# TRANSCRIPTS_URL = "http://ftp.ensembl.org/pub/release-105/fasta/naja_naja/cdna/Naja_naja.Nana_v5.cdna.all.fa.gz"
+
+# ENVIRONMENTS = "../envs"
+
+localrules: fetch_transcriptome, filter_by_length, split_transcriptome, combine_chunks_and_filter, extract_toxins, combine_proteins
+
+#print(cluster_config)
+#print(cluster_config["find_and_translate_orfs"])
+#print(cluster_config["find_toxins"])
+
+my_cluster_config = dict(cluster_config)
+
+rule all:
+	input:
+		#transcripts = "output/transcripts.fa.gz",
+		#txome_chunks = expand(os.path.join("output", "txome_chunks", "chunk-{chunk}.fa"), chunk=range(10)),
+		#orf_chunks = expand(os.path.join("output", "orf_chunks", "chunk-{chunk}.orfs.fa"), chunk=range(10)),
+		#toxin_chunks = expand(os.path.join("output", "toxin_chunks", "chunk-{chunk}.toxins.tsv"), chunk=range(10)),
+		all_proteins = os.path.join("output", "all_proteins.faa"),
+		blast_output = os.path.join("output", "toxin_blast.filtered.tsv"),
+		toxins = os.path.join("output", "toxins.faa")
+
+
+
+rule fetch_transcriptome:
+	output:
+		transcripts = "output/transcripts.fa.gz"
+
+	params:
+		url = config["TRANSCRIPTS_URL"]
+
+
+	log:
+		"fetch_transcriptome.log"
+
+	shell:
+		"""
+		set +o pipefail;
+		mkdir -p output/
+		wget {params.url} -O {output.transcripts} &> {log}
+		"""
+
+
+rule filter_by_length:
+	input:
+		transcripts = rules.fetch_transcriptome.output.transcripts
+	output:
+		filtered = rules.fetch_transcriptome.output.transcripts.replace(".fa.gz", ".length_filtered.fa.gz")
+	params:
+		minlen = config["transcript_criteria"]["minimum_transcript_length"]
+	conda:
+		f"{config['ENVIRONMENTS']}/bbmap.yml"
+	shell:
+		"""
+		bbduk.sh in={input.transcripts} out={output.filtered} minlen={params.minlen}
+		"""
+
+
+rule split_transcriptome:
+	input:
+		rules.fetch_transcriptome.output.transcripts
+	output:
+		txome_chunks = expand(os.path.join("output", "txome_chunks", "chunk-{chunk}.fa"), chunk=range(10))
+	params:
+		chunksize = config["transcript_criteria"]["chunksize"]
+	shell:
+		"""
+		set +o pipefail;
+		mkdir -p output/txome_chunks/
+		gzip -dc {input[0]} | awk 'BEGIN {{n=0;m=0;}} /^>/ {{ if (n%{params.chunksize}==0) {{f=sprintf(\"output/txome_chunks/chunk-%d.fa\",m); m++;}}; n++; }} {{ print >> f }}'
+		"""
+
+
+rule find_and_translate_orfs:
+	input:
+		chunk = os.path.join("output", "txome_chunks", "chunk-{chunk}.fa"),
+	output:
+		orfs = os.path.join("output", "orf_chunks", "chunk-{chunk}.orfs.fa"),
+	params:
+		minlen = 1000
+	#resources:
+	#	# mem_mb = 2048
+	#	# mem_mb = int(my_cluster_config["find_and_translate_orfs"]["mem"])
+	conda:
+		f"{config['ENVIRONMENTS']}/emboss.yml"
+	shell:
+		"""
+		set +o pipefail;
+		mkdir -p output/orf_chunks/
+		getorf -sequence {input.chunk} -outseq {output.orfs} -minsize {params.minlen}
+		"""
+
+
+rule find_toxins:
+	input:
+		proteins = os.path.join("output", "orf_chunks", "chunk-{chunk}.orfs.fa"),
+		db = config["VENOM_DATABASE"]
+	output:
+		toxin_hits = os.path.join("output", "toxin_chunks", "chunk-{chunk}.toxins.tsv")
+	conda:
+		f"{config['ENVIRONMENTS']}/blast.yml"
+	#resources:
+	#	# mem_mb = 4096
+	#	#mem_mb = int(my_cluster_config["find_toxins"]["mem"])
+	threads:
+		4
+	#	#int(my_cluster_config["find_toxins"]["cpus-per-task"])		
+	shell:
+		"""
+		set +o pipefail;
+		mkdir -p output/toxin_chunks/
+		blastp -db {input.db} -query {input.proteins} -num_threads {threads} -out {output.toxin_hits} -outfmt '6 qseqid sseqid pident qstart qend sstart send qlen slen length nident mismatch positive gapopen gaps evalue bitscore'
+		"""
+
+
+rule combine_chunks_and_filter:
+	input:
+		expand(os.path.join("output", "toxin_chunks", "chunk-{chunk}.toxins.tsv"), chunk=range(10))
+	output:
+		toxin_proteins_blast = os.path.join("output", "toxin_blast.filtered.tsv")
+	params:
+		eval_threshold = config['transcript_criteria']['eval_threshold']
+	shell:
+		"""
+		awk '$16 < {params.eval_threshold}' {input} > {output.toxin_proteins_blast}
+		"""
+
+rule combine_proteins:
+	input:
+		expand(os.path.join("output", "orf_chunks", "chunk-{chunk}.orfs.fa"), chunk=range(10))
+	output:
+		all_proteins = os.path.join("output", "all_proteins.faa")
+	shell:
+		"""
+		cat {input} > {output.all_proteins}
+		"""
+
+
+rule extract_toxins:
+	input:
+		toxin_proteins_blast = rules.combine_chunks_and_filter.output.toxin_proteins_blast,
+		proteins = rules.combine_proteins.output.all_proteins
+	output:
+		toxin_proteins = os.path.join("output", "toxins.faa")
+	conda:
+		f"{config['ENVIRONMENTS']}/seqtk.yml"
+	shell:
+		"""
+		seqtk subseq {input.proteins} <(cut -f 1 {input.toxin_proteins_blast} | sort -u) > {output.toxin_proteins}
+		"""
+	
+
+
